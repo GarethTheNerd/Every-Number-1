@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -36,7 +37,8 @@ def get_spotify_client():
         cache_path=None
     )
     token_info = auth_manager.refresh_access_token(SPOTIFY_REFRESH_TOKEN)
-    return spotipy.Spotify(auth=token_info["access_token"])
+    # Increase timeout to 30 seconds
+    return spotipy.Spotify(auth=token_info["access_token"], requests_timeout=30)
 
 sp = get_spotify_client()
 
@@ -168,7 +170,7 @@ def get_latest_number_one():
                 continue
     return latest_song
 
-# ==== ADD TO SPOTIFY WITH CACHING ====
+# ==== ADD TO SPOTIFY WITH CACHING + RETRY ====
 def add_song_to_playlist(song, artist):
     key = f"{song} - {artist}"
     track_id = track_cache.get(key)
@@ -190,9 +192,15 @@ def add_song_to_playlist(song, artist):
         if DEBUG:
             print(f"📝 Would add: {song} - {artist}")
         else:
-            sp.playlist_add_items(PLAYLIST_ID, [track_id])
-            added_tracks.append(track_id)
-            print(f"✅ Added: {song} - {artist}")
+            for attempt in range(3):  # retry up to 3 times
+                try:
+                    sp.playlist_add_items(PLAYLIST_ID, [track_id])
+                    added_tracks.append(track_id)
+                    print(f"✅ Added: {song} - {artist}")
+                    break
+                except requests.exceptions.ReadTimeout:
+                    print(f"⚠️ Timeout adding {song} - retrying ({attempt+1}/3)...")
+                    time.sleep(2)
     else:
         print(f"⏩ Already in playlist: {song} - {artist}")
 
