@@ -190,9 +190,16 @@ def search_spotify_track(song, artist, original_artist):
             return results["tracks"]["items"][0]["id"]
     return None
 
-# ==== ADD TO SPOTIFY WITH CACHING + RETRY ====
+# ==== ADD TO SPOTIFY WITH CACHING + RETRY + DEDUP ====
+added_song_artist_pairs = set()
+
 def add_song_to_playlist(song, artist, original_artist):
     global existing_playlist_tracks
+    pair_key = f"{song.lower()}|{artist.lower()}"
+    if pair_key in added_song_artist_pairs:
+        print(f"⏩ Duplicate song+artist detected, skipping: {song} - {artist}")
+        return
+
     key = f"{song} - {artist}"
     track_id = track_cache.get(key)
 
@@ -215,7 +222,8 @@ def add_song_to_playlist(song, artist, original_artist):
                 try:
                     sp.playlist_add_items(PLAYLIST_ID, [track_id])
                     added_tracks.append(track_id)
-                    existing_playlist_tracks.add(track_id)  # refresh mid-run
+                    existing_playlist_tracks.add(track_id)
+                    added_song_artist_pairs.add(pair_key)
                     print(f"✅ Added: {song} - {artist}")
                     break
                 except requests.exceptions.ReadTimeout:
@@ -229,8 +237,14 @@ def reorder_playlist_chronologically():
     print("🔄 Reordering playlist chronologically...")
     all_songs_sorted = get_all_number_ones_from_decades()
     track_ids_sorted = []
+    unique_pairs = set()
 
     for s in all_songs_sorted:
+        pair_key = f"{s['song'].lower()}|{s['artist'].lower()}"
+        if pair_key in unique_pairs:
+            continue
+        unique_pairs.add(pair_key)
+
         key = f"{s['song']} - {s['artist']}"
         track_id = track_cache.get(key)
         if not track_id:
@@ -241,14 +255,13 @@ def reorder_playlist_chronologically():
             track_ids_sorted.append(track_id)
 
     if DEBUG:
-        print(f"📝 Would reorder playlist to {len(track_ids_sorted)} tracks in chronological order")
+        print(f"📝 Would reorder playlist to {len(track_ids_sorted)} unique tracks in chronological order")
         return
 
     sp.playlist_replace_items(PLAYLIST_ID, [])
     for i in range(0, len(track_ids_sorted), 100):
         sp.playlist_add_items(PLAYLIST_ID, track_ids_sorted[i:i+100])
 
-    # ✅ Sync JSON to match playlist exactly
     with open(DATA_FILE, "w") as f:
         json.dump(track_ids_sorted, f)
     print("✅ Playlist reordered and JSON synced")
