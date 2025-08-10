@@ -32,7 +32,7 @@ def get_spotify_client():
         client_id=SPOTIPY_CLIENT_ID,
         client_secret=SPOTIPY_CLIENT_SECRET,
         redirect_uri=SPOTIPY_REDIRECT_URI,
-        scope="playlist-modify-public playlist-read-private",
+        scope="playlist-modify-public playlist-modify-private playlist-read-private",
         cache_path=None
     )
     token_info = auth_manager.refresh_access_token(SPOTIFY_REFRESH_TOKEN)
