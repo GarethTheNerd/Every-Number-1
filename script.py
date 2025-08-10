@@ -6,11 +6,16 @@ from bs4 import BeautifulSoup
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 from datetime import datetime
+import warnings
+
+# ==== CLEAN LOGS ====
+warnings.simplefilter(action="ignore", category=FutureWarning)
 
 # ==== CONFIG ====
 START_DATE = datetime(1996, 2, 7)
 PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 DATA_FILE = "added_tracks.json"
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 # Spotify API credentials from GitHub Secrets
 SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
@@ -27,7 +32,6 @@ def get_spotify_client():
         scope="playlist-modify-public",
         cache_path=None
     )
-    # Force refresh using stored refresh token
     token_info = auth_manager.refresh_access_token(SPOTIFY_REFRESH_TOKEN)
     return spotipy.Spotify(auth=token_info["access_token"])
 
@@ -53,9 +57,9 @@ def get_all_number_ones(start_year=1996):
             df = pd.read_html(str(table))[0]
             for _, row in df.iterrows():
                 try:
-                    date_str = str(row[0])
-                    song = str(row[1])
-                    artist = str(row[2])
+                    date_str = str(row.iloc[0])
+                    song = str(row.iloc[1])
+                    artist = str(row.iloc[2])
                     date_obj = datetime.strptime(
                         date_str.split("–")[0].strip(), "%d %B %Y"
                     )
@@ -81,9 +85,9 @@ def get_latest_number_one():
         df = pd.read_html(str(table))[0]
         for _, row in df.iterrows():
             try:
-                date_str = str(row[0])
-                song = str(row[1])
-                artist = str(row[2])
+                date_str = str(row.iloc[0])
+                song = str(row.iloc[1])
+                artist = str(row.iloc[2])
                 date_obj = datetime.strptime(
                     date_str.split("–")[0].strip(), "%d %B %Y"
                 )
@@ -101,9 +105,12 @@ def add_song_to_playlist(song, artist):
     if results["tracks"]["items"]:
         track_id = results["tracks"]["items"][0]["id"]
         if track_id not in added_tracks:
-            sp.playlist_add_items(PLAYLIST_ID, [track_id])
-            added_tracks.append(track_id)
-            print(f"✅ Added: {song} - {artist}")
+            if DEBUG:
+                print(f"🔍 Would add: {song} - {artist}")
+            else:
+                sp.playlist_add_items(PLAYLIST_ID, [track_id])
+                added_tracks.append(track_id)
+                print(f"✅ Added: {song} - {artist}")
         else:
             print(f"⏩ Already added: {song} - {artist}")
     else:
@@ -114,12 +121,14 @@ if __name__ == "__main__":
     if not added_tracks:
         print("📀 First run detected — backfilling all Number 1s since 1996...")
         songs = get_all_number_ones(1996)
-        for s in songs:
+        for idx, s in enumerate(songs, start=1):
+            print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
             add_song_to_playlist(s["song"], s["artist"])
     else:
         print("🔍 Checking latest Number 1...")
         latest = get_latest_number_one()
         if latest and latest["date"] >= START_DATE:
+            print(f"Latest chart-topper: {latest['song']} - {latest['artist']}")
             add_song_to_playlist(latest["song"], latest["artist"])
 
     with open(DATA_FILE, "w") as f:
