@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import requests
 import pandas as pd
@@ -70,18 +71,22 @@ def get_existing_playlist_tracks():
 
 existing_playlist_tracks = set(get_existing_playlist_tracks())
 
+# ==== NORMALISE HEADERS ====
+def normalise_header(header):
+    return re.sub(r"[^a-z]", "", header.lower())
+
 # ==== FLEXIBLE TABLE PARSER ====
 def parse_wiki_table(table, all_songs):
     df = pd.read_html(StringIO(str(table)))[0]
-    df.columns = [str(c).strip().lower() for c in df.columns]  # normalize headers
+    df.columns = [normalise_header(str(c)) for c in df.columns]  # normalise headers
 
-    # Find columns by name
-    date_col = next((c for c in df.columns if "date" in c), None)
-    song_col = next((c for c in df.columns if "song" in c), None)
+    # Find columns by flexible matching
+    date_col = next((c for c in df.columns if "week" in c or "date" in c), None)
+    song_col = next((c for c in df.columns if "single" in c or "song" in c), None)
     artist_col = next((c for c in df.columns if "artist" in c), None)
 
     if not date_col or not song_col or not artist_col:
-        print("⚠️ Skipping table - required columns not found")
+        print(f"⚠️ Skipping table - required columns not found. Headers: {df.columns.tolist()}")
         return
 
     for _, row in df.iterrows():
@@ -140,9 +145,9 @@ def get_latest_number_one():
 
     for table in tables:
         df = pd.read_html(StringIO(str(table)))[0]
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        date_col = next((c for c in df.columns if "date" in c), None)
-        song_col = next((c for c in df.columns if "song" in c), None)
+        df.columns = [normalise_header(str(c)) for c in df.columns]
+        date_col = next((c for c in df.columns if "week" in c or "date" in c), None)
+        song_col = next((c for c in df.columns if "single" in c or "song" in c), None)
         artist_col = next((c for c in df.columns if "artist" in c), None)
 
         if not date_col or not song_col or not artist_col:
