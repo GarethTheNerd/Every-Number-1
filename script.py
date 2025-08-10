@@ -52,11 +52,17 @@ def get_all_number_ones(start_year=1996):
     for year in range(start_year, current_year + 1):
         print(f"📅 Scraping year {year}...")
         url = f"https://en.wikipedia.org/wiki/List_of_UK_Singles_Chart_number_ones_of_{year}"
+        print(f"🔗 URL: {url}")
         r = requests.get(url)
         soup = BeautifulSoup(r.text, "html.parser")
         tables = soup.find_all("table", {"class": "wikitable"})
-        for table in tables:
+        if not tables:
+            print(f"⚠️ No tables found for {year}")
+        for t_index, table in enumerate(tables, start=1):
+            print(f"   📊 Parsing table {t_index} of {len(tables)} for {year}...")
             df = pd.read_html(StringIO(str(table)))[0]
+            print("📋 Table preview:")
+            print(df.head())  # Show first few rows for debugging
             for _, row in df.iterrows():
                 try:
                     date_str = str(row.iloc[0])
@@ -69,7 +75,7 @@ def get_all_number_ones(start_year=1996):
                         all_songs.append(
                             {"date": date_obj, "song": song, "artist": artist}
                         )
-                except Exception:
+                except Exception as e:
                     continue
     return sorted(all_songs, key=lambda x: x["date"])
 
@@ -130,8 +136,8 @@ if __name__ == "__main__":
     if not added_tracks:
         print("📀 First run detected — backfilling all Number 1s since 1996...")
         if DEBUG:
-            # Only scrape last 2 years in debug mode
-            start_year = datetime.now().year - 1
+            # Only scrape last 3 years in debug mode
+            start_year = datetime.now().year - 2
         else:
             start_year = 1996
         songs = get_all_number_ones(start_year)
