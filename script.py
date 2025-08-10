@@ -56,7 +56,6 @@ else:
 
 # ==== LOAD TRACKS ALREADY IN SPOTIFY PLAYLIST ====
 def get_existing_playlist_tracks():
-    print("📋 Fetching existing playlist tracks from Spotify...")
     existing_ids = []
     results = sp.playlist_items(PLAYLIST_ID, fields="items.track.id,total,next", additional_types=["track"])
     while results:
@@ -67,10 +66,10 @@ def get_existing_playlist_tracks():
             results = sp.next(results)
         else:
             break
-    print(f"✅ Found {len(existing_ids)} existing tracks in playlist")
-    return existing_ids
+    return set(existing_ids)
 
-existing_playlist_tracks = set(get_existing_playlist_tracks())
+existing_playlist_tracks = get_existing_playlist_tracks()
+print(f"📋 Found {len(existing_playlist_tracks)} existing tracks in playlist")
 
 # ==== NORMALISE HEADERS ====
 def normalise_header(header):
@@ -78,8 +77,8 @@ def normalise_header(header):
 
 # ==== CLEAN SONG & ARTIST ====
 def clean_song_title(song):
-    song = song.strip('"')  # remove quotes
-    song = re.sub(r"\[.*?\]|\(.*?\)", "", song)  # remove [No 2], (Remix), etc.
+    song = song.strip('"')
+    song = re.sub(r"\[.*?\]|\(.*?\)", "", song)
     return song.strip()
 
 def clean_artist_name(artist):
@@ -89,14 +88,13 @@ def clean_artist_name(artist):
 # ==== FLEXIBLE TABLE PARSER ====
 def parse_wiki_table(table, all_songs):
     df = pd.read_html(StringIO(str(table)))[0]
-    df.columns = [normalise_header(str(c)) for c in df.columns]  # normalise headers
+    df.columns = [normalise_header(str(c)) for c in df.columns]
 
     date_col = next((c for c in df.columns if "week" in c or "date" in c), None)
     song_col = next((c for c in df.columns if "single" in c or "song" in c), None)
     artist_col = next((c for c in df.columns if "artist" in c), None)
 
     if not date_col or not song_col or not artist_col:
-        print(f"⚠️ Skipping table - required columns not found. Headers: {df.columns.tolist()}")
         return
 
     for _, row in df.iterrows():
@@ -104,13 +102,14 @@ def parse_wiki_table(table, all_songs):
             date_str = str(row[date_col])
             song = clean_song_title(str(row[song_col]))
             artist = clean_artist_name(str(row[artist_col]))
-            date_obj = datetime.strptime(
-                date_str.split("–")[0].strip(), "%d %B %Y"
-            )
+            date_obj = datetime.strptime(date_str.split("–")[0].strip(), "%d %B %Y")
             if date_obj >= START_DATE:
-                all_songs.append(
-                    {"date": date_obj, "song": song, "artist": artist, "original_artist": str(row[artist_col])}
-                )
+                all_songs.append({
+                    "date": date_obj,
+                    "song": song,
+                    "artist": artist,
+                    "original_artist": str(row[artist_col])
+                })
         except Exception:
             continue
 
@@ -122,22 +121,15 @@ def get_all_number_ones_from_decades():
         "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2010s",
         "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
     ]
-
     if DEBUG:
-        decade_urls = [
-            "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
-        ]
+        decade_urls = ["https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"]
 
     all_songs = []
     for url in decade_urls:
-        print(f"📅 Scraping decade page: {url}")
         r = requests.get(url)
         soup = BeautifulSoup(r.text, "html.parser")
         tables = soup.find_all("table", {"class": "wikitable"})
-        if not tables:
-            print(f"⚠️ No tables found on {url}")
-        for t_index, table in enumerate(tables, start=1):
-            print(f"   📊 Parsing table {t_index} of {len(tables)}...")
+        for table in tables:
             parse_wiki_table(table, all_songs)
 
     return sorted(all_songs, key=lambda x: x["date"])
@@ -166,9 +158,7 @@ def get_latest_number_one():
                 date_str = str(row[date_col])
                 song = clean_song_title(str(row[song_col]))
                 artist = clean_artist_name(str(row[artist_col]))
-                date_obj = datetime.strptime(
-                    date_str.split("–")[0].strip(), "%d %B %Y"
-                )
+                date_obj = datetime.strptime(date_str.split("–")[0].strip(), "%d %B %Y")
                 if latest_date is None or date_obj > latest_date:
                     latest_date = date_obj
                     latest_song = {
@@ -186,38 +176,23 @@ def search_spotify_track(song, artist, original_artist):
     clean_song = clean_song_title(song)
     clean_artist = clean_artist_name(artist)
 
-    # 1. Exact match with cleaned artist
-    query = f'track:"{clean_song}" artist:"{clean_artist}"'
-    results = sp.search(q=query, type="track", limit=1)
-    if results["tracks"]["items"]:
-        print(f"   ✅ Found with exact match (cleaned artist)")
-        return results["tracks"]["items"][0]["id"]
+    queries = [
+        (f'track:"{clean_song}" artist:"{clean_artist}"', "exact match (cleaned artist)"),
+        (f'track:"{clean_song}"', "song only"),
+        (f'{clean_song} {clean_artist}', "general keyword search (cleaned)"),
+        (f'track:"{clean_song}" artist:"{original_artist}"', "full original artist string")
+    ]
 
-    # 2. Match by song only
-    query = f'track:"{clean_song}"'
-    results = sp.search(q=query, type="track", limit=1)
-    if results["tracks"]["items"]:
-        print(f"   ✅ Found with song only")
-        return results["tracks"]["items"][0]["id"]
-
-    # 3. General keyword search (cleaned)
-    query = f'{clean_song} {clean_artist}'
-    results = sp.search(q=query, type="track", limit=1)
-    if results["tracks"]["items"]:
-        print(f"   ✅ Found with general keyword search (cleaned)")
-        return results["tracks"]["items"][0]["id"]
-
-    # 4. Fallback: use full original artist string from Wikipedia
-    query = f'track:"{clean_song}" artist:"{original_artist}"'
-    results = sp.search(q=query, type="track", limit=1)
-    if results["tracks"]["items"]:
-        print(f"   ✅ Found with full original artist string")
-        return results["tracks"]["items"][0]["id"]
-
+    for query, desc in queries:
+        results = sp.search(q=query, type="track", limit=1)
+        if results["tracks"]["items"]:
+            print(f"   ✅ Found with {desc}")
+            return results["tracks"]["items"][0]["id"]
     return None
 
 # ==== ADD TO SPOTIFY WITH CACHING + RETRY ====
 def add_song_to_playlist(song, artist, original_artist):
+    global existing_playlist_tracks
     key = f"{song} - {artist}"
     track_id = track_cache.get(key)
 
@@ -240,6 +215,7 @@ def add_song_to_playlist(song, artist, original_artist):
                 try:
                     sp.playlist_add_items(PLAYLIST_ID, [track_id])
                     added_tracks.append(track_id)
+                    existing_playlist_tracks.add(track_id)  # refresh mid-run
                     print(f"✅ Added: {song} - {artist}")
                     break
                 except requests.exceptions.ReadTimeout:
@@ -248,7 +224,7 @@ def add_song_to_playlist(song, artist, original_artist):
     else:
         print(f"⏩ Already in playlist: {song} - {artist}")
 
-# ==== REORDER PLAYLIST CHRONOLOGICALLY ====
+# ==== REORDER PLAYLIST CHRONOLOGICALLY & SYNC JSON ====
 def reorder_playlist_chronologically():
     print("🔄 Reordering playlist chronologically...")
     all_songs_sorted = get_all_number_ones_from_decades()
@@ -271,7 +247,11 @@ def reorder_playlist_chronologically():
     sp.playlist_replace_items(PLAYLIST_ID, [])
     for i in range(0, len(track_ids_sorted), 100):
         sp.playlist_add_items(PLAYLIST_ID, track_ids_sorted[i:i+100])
-    print("✅ Playlist reordered chronologically")
+
+    # ✅ Sync JSON to match playlist exactly
+    with open(DATA_FILE, "w") as f:
+        json.dump(track_ids_sorted, f)
+    print("✅ Playlist reordered and JSON synced")
 
 # ==== MAIN ====
 if __name__ == "__main__":
@@ -291,7 +271,5 @@ if __name__ == "__main__":
             add_song_to_playlist(latest["song"], latest["artist"], latest["original_artist"])
         reorder_playlist_chronologically()
 
-    with open(DATA_FILE, "w") as f:
-        json.dump(added_tracks, f)
     with open(CACHE_FILE, "w") as f:
         json.dump(track_cache, f)
