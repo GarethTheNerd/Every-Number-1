@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 from datetime import datetime
+from io import StringIO
 import warnings
 
 # ==== CLEAN LOGS ====
@@ -44,17 +45,18 @@ if os.path.exists(DATA_FILE):
 else:
     added_tracks = []
 
-# ==== SCRAPE ALL UK NUMBER 1s SINCE 1996 ====
+# ==== SCRAPE ALL UK NUMBER 1s SINCE START_YEAR ====
 def get_all_number_ones(start_year=1996):
     all_songs = []
     current_year = datetime.now().year
     for year in range(start_year, current_year + 1):
+        print(f"📅 Scraping year {year}...")
         url = f"https://en.wikipedia.org/wiki/List_of_UK_Singles_Chart_number_ones_of_{year}"
         r = requests.get(url)
         soup = BeautifulSoup(r.text, "html.parser")
         tables = soup.find_all("table", {"class": "wikitable"})
         for table in tables:
-            df = pd.read_html(str(table))[0]
+            df = pd.read_html(StringIO(str(table)))[0]
             for _, row in df.iterrows():
                 try:
                     date_str = str(row.iloc[0])
@@ -82,7 +84,7 @@ def get_latest_number_one():
     latest_date = None
 
     for table in tables:
-        df = pd.read_html(str(table))[0]
+        df = pd.read_html(StringIO(str(table)))[0]
         for _, row in df.iterrows():
             try:
                 date_str = str(row.iloc[0])
@@ -103,10 +105,17 @@ def add_song_to_playlist(song, artist):
     query = f"track:{song} artist:{artist}"
     results = sp.search(q=query, type="track", limit=1)
     if results["tracks"]["items"]:
-        track_id = results["tracks"]["items"][0]["id"]
+        track = results["tracks"]["items"][0]
+        track_id = track["id"]
+        track_name = track["name"]
+        track_artist = track["artists"][0]["name"]
+
+        if DEBUG:
+            print(f"🔍 Found match: {track_name} - {track_artist} (ID: {track_id})")
+
         if track_id not in added_tracks:
             if DEBUG:
-                print(f"🔍 Would add: {song} - {artist}")
+                print(f"📝 Would add: {song} - {artist}")
             else:
                 sp.playlist_add_items(PLAYLIST_ID, [track_id])
                 added_tracks.append(track_id)
@@ -120,7 +129,12 @@ def add_song_to_playlist(song, artist):
 if __name__ == "__main__":
     if not added_tracks:
         print("📀 First run detected — backfilling all Number 1s since 1996...")
-        songs = get_all_number_ones(1996)
+        if DEBUG:
+            # Only scrape last 2 years in debug mode
+            start_year = datetime.now().year - 1
+        else:
+            start_year = 1996
+        songs = get_all_number_ones(start_year)
         for idx, s in enumerate(songs, start=1):
             print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
             add_song_to_playlist(s["song"], s["artist"])
