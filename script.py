@@ -176,19 +176,42 @@ def get_latest_number_one():
                 continue
     return latest_song
 
+# ==== FUZZY SEARCH ====
+def search_spotify_track(song, artist):
+    clean_song = clean_song_title(song)
+    clean_artist = clean_artist_name(artist)
+
+    # 1. Exact match with artist
+    query = f'track:"{clean_song}" artist:"{clean_artist}"'
+    results = sp.search(q=query, type="track", limit=1)
+    if results["tracks"]["items"]:
+        return results["tracks"]["items"][0]["id"]
+
+    # 2. Match by song only
+    query = f'track:"{clean_song}"'
+    results = sp.search(q=query, type="track", limit=1)
+    if results["tracks"]["items"]:
+        return results["tracks"]["items"][0]["id"]
+
+    # 3. General keyword search
+    query = f'{clean_song} {clean_artist}'
+    results = sp.search(q=query, type="track", limit=1)
+    if results["tracks"]["items"]:
+        return results["tracks"]["items"][0]["id"]
+
+    return None
+
 # ==== ADD TO SPOTIFY WITH CACHING + RETRY ====
 def add_song_to_playlist(song, artist):
     key = f"{song} - {artist}"
     track_id = track_cache.get(key)
 
     if not track_id:
-        query = f"track:{song} artist:{artist}"
-        results = sp.search(q=query, type="track", limit=1)
-        if results["tracks"]["items"]:
-            track_id = results["tracks"]["items"][0]["id"]
+        track_id = search_spotify_track(song, artist)
+        if track_id:
             track_cache[key] = track_id
         else:
-            print(f"❌ Not found: {song} - {artist}")
+            print(f"❌ Not found after fuzzy search: {song} - {artist}")
             return
 
     if DEBUG:
@@ -220,9 +243,8 @@ def reorder_playlist_chronologically():
         key = f"{s['song']} - {s['artist']}"
         track_id = track_cache.get(key)
         if not track_id:
-            results = sp.search(q=f"track:{s['song']} artist:{s['artist']}", type="track", limit=1)
-            if results["tracks"]["items"]:
-                track_id = results["tracks"]["items"][0]["id"]
+            track_id = search_spotify_track(s['song'], s['artist'])
+            if track_id:
                 track_cache[key] = track_id
         if track_id:
             track_ids_sorted.append(track_id)
