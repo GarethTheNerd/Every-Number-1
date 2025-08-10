@@ -109,7 +109,7 @@ def parse_wiki_table(table, all_songs):
             )
             if date_obj >= START_DATE:
                 all_songs.append(
-                    {"date": date_obj, "song": song, "artist": artist}
+                    {"date": date_obj, "song": song, "artist": artist, "original_artist": str(row[artist_col])}
                 )
         except Exception:
             continue
@@ -171,43 +171,58 @@ def get_latest_number_one():
                 )
                 if latest_date is None or date_obj > latest_date:
                     latest_date = date_obj
-                    latest_song = {"date": date_obj, "song": song, "artist": artist}
+                    latest_song = {
+                        "date": date_obj,
+                        "song": song,
+                        "artist": artist,
+                        "original_artist": str(row[artist_col])
+                    }
             except Exception:
                 continue
     return latest_song
 
-# ==== FUZZY SEARCH ====
-def search_spotify_track(song, artist):
+# ==== 4-STEP FUZZY SEARCH ====
+def search_spotify_track(song, artist, original_artist):
     clean_song = clean_song_title(song)
     clean_artist = clean_artist_name(artist)
 
-    # 1. Exact match with artist
+    # 1. Exact match with cleaned artist
     query = f'track:"{clean_song}" artist:"{clean_artist}"'
     results = sp.search(q=query, type="track", limit=1)
     if results["tracks"]["items"]:
+        print(f"   ✅ Found with exact match (cleaned artist)")
         return results["tracks"]["items"][0]["id"]
 
     # 2. Match by song only
     query = f'track:"{clean_song}"'
     results = sp.search(q=query, type="track", limit=1)
     if results["tracks"]["items"]:
+        print(f"   ✅ Found with song only")
         return results["tracks"]["items"][0]["id"]
 
-    # 3. General keyword search
+    # 3. General keyword search (cleaned)
     query = f'{clean_song} {clean_artist}'
     results = sp.search(q=query, type="track", limit=1)
     if results["tracks"]["items"]:
+        print(f"   ✅ Found with general keyword search (cleaned)")
+        return results["tracks"]["items"][0]["id"]
+
+    # 4. Fallback: use full original artist string from Wikipedia
+    query = f'track:"{clean_song}" artist:"{original_artist}"'
+    results = sp.search(q=query, type="track", limit=1)
+    if results["tracks"]["items"]:
+        print(f"   ✅ Found with full original artist string")
         return results["tracks"]["items"][0]["id"]
 
     return None
 
 # ==== ADD TO SPOTIFY WITH CACHING + RETRY ====
-def add_song_to_playlist(song, artist):
+def add_song_to_playlist(song, artist, original_artist):
     key = f"{song} - {artist}"
     track_id = track_cache.get(key)
 
     if not track_id:
-        track_id = search_spotify_track(song, artist)
+        track_id = search_spotify_track(song, artist, original_artist)
         if track_id:
             track_cache[key] = track_id
         else:
@@ -243,7 +258,7 @@ def reorder_playlist_chronologically():
         key = f"{s['song']} - {s['artist']}"
         track_id = track_cache.get(key)
         if not track_id:
-            track_id = search_spotify_track(s['song'], s['artist'])
+            track_id = search_spotify_track(s['song'], s['artist'], s['original_artist'])
             if track_id:
                 track_cache[key] = track_id
         if track_id:
@@ -266,14 +281,14 @@ if __name__ == "__main__":
         print(f"✅ Found {len(songs)} songs to process")
         for idx, s in enumerate(songs, start=1):
             print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
-            add_song_to_playlist(s["song"], s["artist"])
+            add_song_to_playlist(s["song"], s["artist"], s["original_artist"])
         reorder_playlist_chronologically()
     else:
         print("🔍 Checking latest Number 1...")
         latest = get_latest_number_one()
         if latest and latest["date"] >= START_DATE:
             print(f"Latest chart-topper: {latest['song']} - {latest['artist']}")
-            add_song_to_playlist(latest["song"], latest["artist"])
+            add_song_to_playlist(latest["song"], latest["artist"], latest["original_artist"])
         reorder_playlist_chronologically()
 
     with open(DATA_FILE, "w") as f:
