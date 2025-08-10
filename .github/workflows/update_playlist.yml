@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "0 9 * * 5" # Every Friday at 9am UTC
   workflow_dispatch: # Allow manual trigger
+permissions:
+  contents: write
 
 jobs:
   update-playlist:
@@ -28,7 +30,7 @@ jobs:
           SPOTIPY_REDIRECT_URI: ${{ secrets.SPOTIPY_REDIRECT_URI }}
           SPOTIFY_PLAYLIST_ID: ${{ secrets.SPOTIFY_PLAYLIST_ID }}
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
-          DEBUG: "true"
+          DEBUG: "false"
         run: python script.py
 
       - name: Commit updated track list
