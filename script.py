@@ -52,3 +52,108 @@ def get_all_number_ones_from_decades():
         "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2000s",
         "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2010s",
         "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
+    ]
+
+    if DEBUG:
+        # Only scrape the 2020s for quick testing
+        decade_urls = [
+            "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
+        ]
+
+    all_songs = []
+    for url in decade_urls:
+        print(f"📅 Scraping decade page: {url}")
+        r = requests.get(url)
+        soup = BeautifulSoup(r.text, "html.parser")
+        tables = soup.find_all("table", {"class": "wikitable"})
+        if not tables:
+            print(f"⚠️ No tables found on {url}")
+        for t_index, table in enumerate(tables, start=1):
+            print(f"   📊 Parsing table {t_index} of {len(tables)}...")
+            df = pd.read_html(StringIO(str(table)))[0]
+            for _, row in df.iterrows():
+                try:
+                    date_str = str(row.iloc[0])
+                    song = str(row.iloc[1])
+                    artist = str(row.iloc[2])
+                    date_obj = datetime.strptime(
+                        date_str.split("–")[0].strip(), "%d %B %Y"
+                    )
+                    if date_obj >= START_DATE:
+                        all_songs.append(
+                            {"date": date_obj, "song": song, "artist": artist}
+                        )
+                except Exception:
+                    continue
+    # Sort chronologically
+    return sorted(all_songs, key=lambda x: x["date"])
+
+# ==== SCRAPE LATEST UK NUMBER 1 (from 2020s page) ====
+def get_latest_number_one():
+    url = "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
+    r = requests.get(url)
+    soup = BeautifulSoup(r.text, "html.parser")
+    tables = soup.find_all("table", {"class": "wikitable"})
+    latest_song = None
+    latest_date = None
+
+    for table in tables:
+        df = pd.read_html(StringIO(str(table)))[0]
+        for _, row in df.iterrows():
+            try:
+                date_str = str(row.iloc[0])
+                song = str(row.iloc[1])
+                artist = str(row.iloc[2])
+                date_obj = datetime.strptime(
+                    date_str.split("–")[0].strip(), "%d %B %Y"
+                )
+                if latest_date is None or date_obj > latest_date:
+                    latest_date = date_obj
+                    latest_song = {"date": date_obj, "song": song, "artist": artist}
+            except Exception:
+                continue
+    return latest_song
+
+# ==== ADD TO SPOTIFY ====
+def add_song_to_playlist(song, artist):
+    query = f"track:{song} artist:{artist}"
+    results = sp.search(q=query, type="track", limit=1)
+    if results["tracks"]["items"]:
+        track = results["tracks"]["items"][0]
+        track_id = track["id"]
+        track_name = track["name"]
+        track_artist = track["artists"][0]["name"]
+
+        if DEBUG:
+            print(f"🔍 Found match: {track_name} - {track_artist} (ID: {track_id})")
+
+        if track_id not in added_tracks:
+            if DEBUG:
+                print(f"📝 Would add: {song} - {artist}")
+            else:
+                sp.playlist_add_items(PLAYLIST_ID, [track_id])
+                added_tracks.append(track_id)
+                print(f"✅ Added: {song} - {artist}")
+        else:
+            print(f"⏩ Already added: {song} - {artist}")
+    else:
+        print(f"❌ Not found: {song} - {artist}")
+
+# ==== MAIN ====
+if __name__ == "__main__":
+    if not added_tracks:
+        print("📀 First run detected — backfilling all Number 1s since 1996...")
+        songs = get_all_number_ones_from_decades()
+        print(f"✅ Found {len(songs)} songs to process")
+        for idx, s in enumerate(songs, start=1):
+            print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
+            add_song_to_playlist(s["song"], s["artist"])
+    else:
+        print("🔍 Checking latest Number 1...")
+        latest = get_latest_number_one()
+        if latest and latest["date"] >= START_DATE:
+            print(f"Latest chart-topper: {latest['song']} - {latest['artist']}")
+            add_song_to_playlist(latest["song"], latest["artist"])
+
+    with open(DATA_FILE, "w") as f:
+        json.dump(added_tracks, f)
