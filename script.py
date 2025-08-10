@@ -135,6 +135,7 @@ if __name__ == "__main__":
         else:
             start_year = 1996
         songs = get_all_number_ones(start_year)
+        print(f"✅ Found {len(songs)} songs to process")
         for idx, s in enumerate(songs, start=1):
             print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
             add_song_to_playlist(s["song"], s["artist"])
