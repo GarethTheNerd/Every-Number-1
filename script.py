@@ -16,6 +16,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 START_DATE = datetime(1996, 2, 7)
 PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 DATA_FILE = "added_tracks.json"
+CACHE_FILE = "track_cache.json"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 # Spotify API credentials from GitHub Secrets
@@ -30,7 +31,7 @@ def get_spotify_client():
         client_id=SPOTIPY_CLIENT_ID,
         client_secret=SPOTIPY_CLIENT_SECRET,
         redirect_uri=SPOTIPY_REDIRECT_URI,
-        scope="playlist-modify-public",
+        scope="playlist-modify-public playlist-read-private",
         cache_path=None
     )
     token_info = auth_manager.refresh_access_token(SPOTIFY_REFRESH_TOKEN)
@@ -38,12 +39,65 @@ def get_spotify_client():
 
 sp = get_spotify_client()
 
-# ==== LOAD ALREADY ADDED TRACKS ====
+# ==== LOAD LOCAL DATA ====
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
         added_tracks = json.load(f)
 else:
     added_tracks = []
+
+if os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "r") as f:
+        track_cache = json.load(f)
+else:
+    track_cache = {}
+
+# ==== LOAD TRACKS ALREADY IN SPOTIFY PLAYLIST ====
+def get_existing_playlist_tracks():
+    print("📋 Fetching existing playlist tracks from Spotify...")
+    existing_ids = []
+    results = sp.playlist_items(PLAYLIST_ID, fields="items.track.id,total,next", additional_types=["track"])
+    while results:
+        for item in results["items"]:
+            if item["track"] and item["track"]["id"]:
+                existing_ids.append(item["track"]["id"])
+        if results.get("next"):
+            results = sp.next(results)
+        else:
+            break
+    print(f"✅ Found {len(existing_ids)} existing tracks in playlist")
+    return existing_ids
+
+existing_playlist_tracks = set(get_existing_playlist_tracks())
+
+# ==== FLEXIBLE TABLE PARSER ====
+def parse_wiki_table(table, all_songs):
+    df = pd.read_html(StringIO(str(table)))[0]
+    df.columns = [str(c).strip().lower() for c in df.columns]  # normalize headers
+
+    # Find columns by name
+    date_col = next((c for c in df.columns if "date" in c), None)
+    song_col = next((c for c in df.columns if "song" in c), None)
+    artist_col = next((c for c in df.columns if "artist" in c), None)
+
+    if not date_col or not song_col or not artist_col:
+        print("⚠️ Skipping table - required columns not found")
+        return
+
+    for _, row in df.iterrows():
+        try:
+            date_str = str(row[date_col])
+            song = str(row[song_col])
+            artist = str(row[artist_col])
+            date_obj = datetime.strptime(
+                date_str.split("–")[0].strip(), "%d %B %Y"
+            )
+            if date_obj >= START_DATE:
+                all_songs.append(
+                    {"date": date_obj, "song": song, "artist": artist}
+                )
+        except Exception:
+            continue
 
 # ==== SCRAPE ALL UK NUMBER 1s FROM DECADE PAGES ====
 def get_all_number_ones_from_decades():
@@ -70,21 +124,8 @@ def get_all_number_ones_from_decades():
             print(f"⚠️ No tables found on {url}")
         for t_index, table in enumerate(tables, start=1):
             print(f"   📊 Parsing table {t_index} of {len(tables)}...")
-            df = pd.read_html(StringIO(str(table)))[0]
-            for _, row in df.iterrows():
-                try:
-                    date_str = str(row.iloc[0])
-                    song = str(row.iloc[1])
-                    artist = str(row.iloc[2])
-                    date_obj = datetime.strptime(
-                        date_str.split("–")[0].strip(), "%d %B %Y"
-                    )
-                    if date_obj >= START_DATE:
-                        all_songs.append(
-                            {"date": date_obj, "song": song, "artist": artist}
-                        )
-                except Exception:
-                    continue
+            parse_wiki_table(table, all_songs)
+
     # Sort chronologically
     return sorted(all_songs, key=lambda x: x["date"])
 
@@ -99,11 +140,19 @@ def get_latest_number_one():
 
     for table in tables:
         df = pd.read_html(StringIO(str(table)))[0]
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        date_col = next((c for c in df.columns if "date" in c), None)
+        song_col = next((c for c in df.columns if "song" in c), None)
+        artist_col = next((c for c in df.columns if "artist" in c), None)
+
+        if not date_col or not song_col or not artist_col:
+            continue
+
         for _, row in df.iterrows():
             try:
-                date_str = str(row.iloc[0])
-                song = str(row.iloc[1])
-                artist = str(row.iloc[2])
+                date_str = str(row[date_col])
+                song = str(row[song_col])
+                artist = str(row[artist_col])
                 date_obj = datetime.strptime(
                     date_str.split("–")[0].strip(), "%d %B %Y"
                 )
@@ -114,30 +163,59 @@ def get_latest_number_one():
                 continue
     return latest_song
 
-# ==== ADD TO SPOTIFY ====
+# ==== ADD TO SPOTIFY WITH CACHING ====
 def add_song_to_playlist(song, artist):
-    query = f"track:{song} artist:{artist}"
-    results = sp.search(q=query, type="track", limit=1)
-    if results["tracks"]["items"]:
-        track = results["tracks"]["items"][0]
-        track_id = track["id"]
-        track_name = track["name"]
-        track_artist = track["artists"][0]["name"]
+    key = f"{song} - {artist}"
+    track_id = track_cache.get(key)
 
-        if DEBUG:
-            print(f"🔍 Found match: {track_name} - {track_artist} (ID: {track_id})")
-
-        if track_id not in added_tracks:
-            if DEBUG:
-                print(f"📝 Would add: {song} - {artist}")
-            else:
-                sp.playlist_add_items(PLAYLIST_ID, [track_id])
-                added_tracks.append(track_id)
-                print(f"✅ Added: {song} - {artist}")
+    if not track_id:
+        query = f"track:{song} artist:{artist}"
+        results = sp.search(q=query, type="track", limit=1)
+        if results["tracks"]["items"]:
+            track_id = results["tracks"]["items"][0]["id"]
+            track_cache[key] = track_id
         else:
-            print(f"⏩ Already added: {song} - {artist}")
+            print(f"❌ Not found: {song} - {artist}")
+            return
+
+    if DEBUG:
+        print(f"🔍 Found match: {song} - {artist} (ID: {track_id})")
+
+    if track_id not in added_tracks and track_id not in existing_playlist_tracks:
+        if DEBUG:
+            print(f"📝 Would add: {song} - {artist}")
+        else:
+            sp.playlist_add_items(PLAYLIST_ID, [track_id])
+            added_tracks.append(track_id)
+            print(f"✅ Added: {song} - {artist}")
     else:
-        print(f"❌ Not found: {song} - {artist}")
+        print(f"⏩ Already in playlist: {song} - {artist}")
+
+# ==== REORDER PLAYLIST CHRONOLOGICALLY USING CACHE ====
+def reorder_playlist_chronologically():
+    print("🔄 Reordering playlist chronologically...")
+    all_songs_sorted = get_all_number_ones_from_decades()
+    track_ids_sorted = []
+
+    for s in all_songs_sorted:
+        key = f"{s['song']} - {s['artist']}"
+        track_id = track_cache.get(key)
+        if not track_id:
+            results = sp.search(q=f"track:{s['song']} artist:{s['artist']}", type="track", limit=1)
+            if results["tracks"]["items"]:
+                track_id = results["tracks"]["items"][0]["id"]
+                track_cache[key] = track_id
+        if track_id:
+            track_ids_sorted.append(track_id)
+
+    if DEBUG:
+        print(f"📝 Would reorder playlist to {len(track_ids_sorted)} tracks in chronological order")
+        return
+
+    sp.playlist_replace_items(PLAYLIST_ID, [])
+    for i in range(0, len(track_ids_sorted), 100):
+        sp.playlist_add_items(PLAYLIST_ID, track_ids_sorted[i:i+100])
+    print("✅ Playlist reordered chronologically")
 
 # ==== MAIN ====
 if __name__ == "__main__":
@@ -148,12 +226,17 @@ if __name__ == "__main__":
         for idx, s in enumerate(songs, start=1):
             print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
             add_song_to_playlist(s["song"], s["artist"])
+        reorder_playlist_chronologically()
     else:
         print("🔍 Checking latest Number 1...")
         latest = get_latest_number_one()
         if latest and latest["date"] >= START_DATE:
             print(f"Latest chart-topper: {latest['song']} - {latest['artist']}")
             add_song_to_playlist(latest["song"], latest["artist"])
+        reorder_playlist_chronologically()
 
+    # Save caches
     with open(DATA_FILE, "w") as f:
         json.dump(added_tracks, f)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(track_cache, f)
