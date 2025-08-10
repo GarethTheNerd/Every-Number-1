@@ -37,7 +37,6 @@ def get_spotify_client():
         cache_path=None
     )
     token_info = auth_manager.refresh_access_token(SPOTIFY_REFRESH_TOKEN)
-    # Increase timeout to 30 seconds
     return spotipy.Spotify(auth=token_info["access_token"], requests_timeout=30)
 
 sp = get_spotify_client()
@@ -77,12 +76,21 @@ existing_playlist_tracks = set(get_existing_playlist_tracks())
 def normalise_header(header):
     return re.sub(r"[^a-z]", "", header.lower())
 
+# ==== CLEAN SONG & ARTIST ====
+def clean_song_title(song):
+    song = song.strip('"')  # remove quotes
+    song = re.sub(r"\[.*?\]|\(.*?\)", "", song)  # remove [No 2], (Remix), etc.
+    return song.strip()
+
+def clean_artist_name(artist):
+    artist = re.split(r"\s+(featuring|feat\.|ft\.|with|&)\s+", artist, flags=re.IGNORECASE)[0]
+    return artist.strip()
+
 # ==== FLEXIBLE TABLE PARSER ====
 def parse_wiki_table(table, all_songs):
     df = pd.read_html(StringIO(str(table)))[0]
     df.columns = [normalise_header(str(c)) for c in df.columns]  # normalise headers
 
-    # Find columns by flexible matching
     date_col = next((c for c in df.columns if "week" in c or "date" in c), None)
     song_col = next((c for c in df.columns if "single" in c or "song" in c), None)
     artist_col = next((c for c in df.columns if "artist" in c), None)
@@ -94,8 +102,8 @@ def parse_wiki_table(table, all_songs):
     for _, row in df.iterrows():
         try:
             date_str = str(row[date_col])
-            song = str(row[song_col])
-            artist = str(row[artist_col])
+            song = clean_song_title(str(row[song_col]))
+            artist = clean_artist_name(str(row[artist_col]))
             date_obj = datetime.strptime(
                 date_str.split("–")[0].strip(), "%d %B %Y"
             )
@@ -116,7 +124,6 @@ def get_all_number_ones_from_decades():
     ]
 
     if DEBUG:
-        # Only scrape the 2020s for quick testing
         decade_urls = [
             "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
         ]
@@ -133,10 +140,9 @@ def get_all_number_ones_from_decades():
             print(f"   📊 Parsing table {t_index} of {len(tables)}...")
             parse_wiki_table(table, all_songs)
 
-    # Sort chronologically
     return sorted(all_songs, key=lambda x: x["date"])
 
-# ==== SCRAPE LATEST UK NUMBER 1 (from 2020s page) ====
+# ==== SCRAPE LATEST UK NUMBER 1 ====
 def get_latest_number_one():
     url = "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
     r = requests.get(url)
@@ -158,8 +164,8 @@ def get_latest_number_one():
         for _, row in df.iterrows():
             try:
                 date_str = str(row[date_col])
-                song = str(row[song_col])
-                artist = str(row[artist_col])
+                song = clean_song_title(str(row[song_col]))
+                artist = clean_artist_name(str(row[artist_col]))
                 date_obj = datetime.strptime(
                     date_str.split("–")[0].strip(), "%d %B %Y"
                 )
@@ -192,7 +198,7 @@ def add_song_to_playlist(song, artist):
         if DEBUG:
             print(f"📝 Would add: {song} - {artist}")
         else:
-            for attempt in range(3):  # retry up to 3 times
+            for attempt in range(3):
                 try:
                     sp.playlist_add_items(PLAYLIST_ID, [track_id])
                     added_tracks.append(track_id)
@@ -204,7 +210,7 @@ def add_song_to_playlist(song, artist):
     else:
         print(f"⏩ Already in playlist: {song} - {artist}")
 
-# ==== REORDER PLAYLIST CHRONOLOGICALLY USING CACHE ====
+# ==== REORDER PLAYLIST CHRONOLOGICALLY ====
 def reorder_playlist_chronologically():
     print("🔄 Reordering playlist chronologically...")
     all_songs_sorted = get_all_number_ones_from_decades()
@@ -248,7 +254,6 @@ if __name__ == "__main__":
             add_song_to_playlist(latest["song"], latest["artist"])
         reorder_playlist_chronologically()
 
-    # Save caches
     with open(DATA_FILE, "w") as f:
         json.dump(added_tracks, f)
     with open(CACHE_FILE, "w") as f:
