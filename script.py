@@ -282,20 +282,46 @@ def get_latest_number_one():
     return latest_song
 
 # ==== 4-STEP FUZZY SEARCH ====
-def search_spotify_track(song, artist, original_artist):
+def search_spotify_track(song, artist, original_artist, chart_date: datetime | None):
     clean_song = clean_song_title(song)
     clean_artist = clean_artist_name(artist)
+    chart_year = chart_date.year if chart_date else None
 
-    queries = [
-        (f'track:"{clean_song}" artist:"{clean_artist}"', "exact match (cleaned artist)"),
+    # Build queries with year constraints to improve precision
+    queries: list[tuple[str, str]] = []
+    if chart_year:
+        yr = chart_year
+        yr_next = yr + 1
+        queries.extend([
+            (f'track:"{clean_song}" artist:"{clean_artist}" year:{yr}', "exact+year"),
+            (f'track:"{clean_song}" artist:"{original_artist}" year:{yr}', "orig-artist+year"),
+            (f'track:"{clean_song}" year:{yr}', "song+year"),
+            (f'{clean_song} {clean_artist} year:{yr}', "kw+year"),
+            (f'track:"{clean_song}" artist:"{clean_artist}" year:{yr}-{yr_next}', "exact+year-range"),
+            (f'track:"{clean_song}" artist:"{original_artist}" year:{yr}-{yr_next}', "orig-artist+year-range"),
+        ])
+    # Fallbacks without year
+    queries.extend([
+        (f'track:"{clean_song}" artist:"{clean_artist}"', "exact"),
         (f'track:"{clean_song}"', "song only"),
-        (f'{clean_song} {clean_artist}', "general keyword search (cleaned)"),
-        (f'track:"{clean_song}" artist:"{original_artist}"', "full original artist string")
-    ]
+        (f'{clean_song} {clean_artist}', "keywords"),
+        (f'track:"{clean_song}" artist:"{original_artist}"', "orig-artist")
+    ])
+
+    def base_artist_set(a: str) -> set[str]:
+        prim = base_artist_key(a)
+        return set([p.strip() for p in prim.split("&") if p.strip()])
+
+    desired_artist_set = base_artist_set(artist)
+    desired_orig_set = base_artist_set(original_artist)
+    desired_song_key = base_song_key(song)
+
+    best = None
+    best_score = -1
 
     for query, desc in queries:
         try:
-            results = sp.search(q=query, type="track", limit=1, market="GB")
+            results = sp.search(q=query, type="track", limit=5, market="GB")
         except Exception:
             results = None
         items = (
@@ -303,16 +329,55 @@ def search_spotify_track(song, artist, original_artist):
             if isinstance(results, dict)
             else []
         )
-        if items:
-            print(f"   ✅ Found with {desc}")
-            return items[0]["id"]
+        for tr in items:
+            try:
+                title = tr.get("name", "")
+                song_key = base_song_key(title)
+                artists = [a.get("name", "") for a in tr.get("artists", [])]
+                artist_join = " & ".join(artists[:2]) if artists else ""
+                artist_set = base_artist_set(artist_join)
+                album = tr.get("album", {})
+                rel_date = album.get("release_date") or ""
+                rel_year = None
+                m = re.match(r"^(\d{4})", rel_date)
+                if m:
+                    rel_year = int(m.group(1))
+
+                score = 0
+                if song_key == desired_song_key:
+                    score += 5
+                inter1 = len(artist_set & desired_artist_set)
+                inter2 = len(artist_set & desired_orig_set)
+                score += min(inter1, 2) * 2
+                score += min(inter2, 1)  # small bonus if matches original credit
+                if chart_year and rel_year:
+                    if rel_year == chart_year:
+                        score += 3
+                    elif abs(rel_year - chart_year) == 1:
+                        score += 1
+                # prefer more popular tracks slightly
+                pop = tr.get("popularity") or 0
+                score += int(pop) // 30  # 0..3
+
+                if score > best_score:
+                    best_score = score
+                    best = tr.get("id")
+            except Exception:
+                continue
+        if best is not None and best_score >= 5:
+            print(f"   ✅ Found with {desc} (score {best_score})")
+            return best
+
+    if best is not None:
+        print(f"   ✅ Found with fallback (score {best_score})")
+        return best
     return None
 
 # ==== ADD TO SPOTIFY WITH CACHING + RETRY + DEDUP ====
 added_song_artist_pairs = set()
 not_found_pairs: set[tuple[str, str]] = set()  # (song_as_seen, artist_original)
 
-def add_song_to_playlist(song, artist, original_artist, original_song):
+def add_song_to_playlist(song, artist, original_artist, original_song, chart_date: datetime | None):
     global existing_playlist_tracks
     pair_key = f"{base_song_key(song)}|{base_artist_key(artist)}"
     if pair_key in added_song_artist_pairs:
@@ -323,7 +388,7 @@ def add_song_to_playlist(song, artist, original_artist, original_song):
     track_id = track_cache.get(cache_key)
 
     if not track_id:
-        track_id = search_spotify_track(song, artist, original_artist)
+        track_id = search_spotify_track(song, artist, original_artist, chart_date)
         if track_id:
             track_cache[cache_key] = track_id
         else:
@@ -369,7 +434,7 @@ def reorder_playlist_chronologically():
         cache_key = f"{base_song_key(s['song'])}|{base_artist_key(s['artist'])}"
         track_id = track_cache.get(cache_key)
         if not track_id:
-            track_id = search_spotify_track(s['song'], s['artist'], s['original_artist'])
+            track_id = search_spotify_track(s['song'], s['artist'], s['original_artist'], s.get('date'))
             if track_id:
                 track_cache[cache_key] = track_id
             else:
@@ -404,14 +469,14 @@ if __name__ == "__main__":
         print(f"✅ Found {len(songs)} songs to process")
         for idx, s in enumerate(songs, start=1):
             print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
-            add_song_to_playlist(s["song"], s["artist"], s["original_artist"], s["original_song"])
+            add_song_to_playlist(s["song"], s["artist"], s["original_artist"], s["original_song"], s.get("date"))
         reorder_playlist_chronologically()
     else:
         print("🔍 Checking latest Number 1...")
         latest = get_latest_number_one()
         if latest and latest["date"] >= START_DATE:
             print(f"Latest chart-topper: {latest['song']} - {latest['artist']}")
-            add_song_to_playlist(latest["song"], latest["artist"], latest["original_artist"], latest["original_song"])
+            add_song_to_playlist(latest["song"], latest["artist"], latest["original_artist"], latest["original_song"], latest.get("date"))
         reorder_playlist_chronologically()
 
     with open(CACHE_FILE, "w") as f:
