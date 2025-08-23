@@ -1,0 +1,51 @@
+# --- Python bytecode & cache ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Packaging / build ---
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+
+# --- Test / coverage ---
+.pytest_cache/
+.tox/
+.coverage
+coverage.xml
+
+# --- Editors / IDE ---
+.vscode/
+.idea/
+*.code-workspace
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+
+# --- Notebooks ---
+.ipynb_checkpoints/
+
+# --- Logs ---
+*.log
+
+# --- Local app data files (this project) ---
+added_tracks.json
+track_cache.json
+
+# --- OAuth / token caches ---
+.cache*
+
+# --- Environment files (do not commit secrets) ---
+.env
+.env.*
+*.env

@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import sys
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -10,6 +11,13 @@ from spotipy.oauth2 import SpotifyOAuth
 from datetime import datetime
 from io import StringIO
 import warnings
+
+# Optional: load .env for local dev if python-dotenv is installed
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    pass
 
 # ==== CLEAN LOGS ====
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -26,6 +34,51 @@ SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
 SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
 SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI")
 SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
+
+# ==== ENV VALIDATION & NORMALIZATION ====
+def extract_playlist_id(value: str | None) -> str | None:
+    """Accept raw ID, spotify:playlist:ID, or https URL and return bare ID.
+
+    Returns None if it can't confidently extract an ID.
+    """
+    if not value:
+        return None
+    v = value.strip()
+    # Match spotify URI or URL
+    m = re.search(r"playlist[:/](?P<id>[a-zA-Z0-9]+)", v)
+    if m:
+        return m.group("id")
+    # If already looks like an ID (22+ base62 chars), accept
+    if re.fullmatch(r"[A-Za-z0-9]{22,}", v):
+        return v
+    return None
+
+def validate_env() -> None:
+    missing = []
+    for name, val in [
+        ("SPOTIPY_CLIENT_ID", SPOTIPY_CLIENT_ID),
+        ("SPOTIPY_CLIENT_SECRET", SPOTIPY_CLIENT_SECRET),
+        ("SPOTIPY_REDIRECT_URI", SPOTIPY_REDIRECT_URI),
+        ("SPOTIFY_REFRESH_TOKEN", SPOTIFY_REFRESH_TOKEN),
+    ]:
+        if not val:
+            missing.append(name)
+    normalized_pid = extract_playlist_id(PLAYLIST_ID)
+    if not normalized_pid:
+        missing.append("SPOTIFY_PLAYLIST_ID (must be a playlist ID/URI/URL)")
+
+    if missing:
+        print("❌ Missing or invalid environment variables:")
+        for m in missing:
+            print(f"   - {m}")
+        print("\nTip: Set these as GitHub Actions Secrets and map them to env in your workflow, e.g.\n"
+              "env:\n  SPOTIPY_CLIENT_ID: ${{ secrets.SPOTIPY_CLIENT_ID }}\n  SPOTIPY_CLIENT_SECRET: ${{ secrets.SPOTIPY_CLIENT_SECRET }}\n  SPOTIPY_REDIRECT_URI: ${{ secrets.SPOTIPY_REDIRECT_URI }}\n  SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}\n  SPOTIFY_PLAYLIST_ID: ${{ secrets.SPOTIFY_PLAYLIST_ID }}\n")
+        sys.exit(1)
+    # Overwrite with normalized playlist ID for all downstream calls
+    globals()["PLAYLIST_ID"] = normalized_pid  # type: ignore
+
+# Validate early before hitting the API
+validate_env()
 
 # ==== AUTH FUNCTION ====
 def get_spotify_client():
