@@ -33,10 +33,10 @@ jobs:
           DEBUG: "false"
         run: python script.py
 
-      - name: Commit updated track list
+      - name: Commit updated outputs
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git add added_tracks.json
-          git commit -m "Update added tracks" || echo "No changes to commit"
+          git add added_tracks.json not_found.json
+          git commit -m "Update playlist outputs (added_tracks, not_found)" || echo "No changes to commit"
           git push

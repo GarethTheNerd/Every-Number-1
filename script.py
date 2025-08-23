@@ -27,6 +27,7 @@ START_DATE = datetime(1996, 2, 7)
 PLAYLIST_ID = os.getenv("SPOTIFY_PLAYLIST_ID")
 DATA_FILE = "added_tracks.json"
 CACHE_FILE = "track_cache.json"
+NOT_FOUND_FILE = "not_found.json"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
 # Spotify API credentials from GitHub Secrets
@@ -205,7 +206,8 @@ def parse_wiki_table(table, all_songs):
     for _, row in df.iterrows():
         try:
             date_str = str(row[date_col])
-            song = clean_song_title(str(row[song_col]))
+            original_song = str(row[song_col])
+            song = clean_song_title(original_song)
             artist = clean_artist_name(str(row[artist_col]))
             date_obj = datetime.strptime(date_str.split("–")[0].strip(), "%d %B %Y")
             if date_obj >= START_DATE:
@@ -213,7 +215,8 @@ def parse_wiki_table(table, all_songs):
                     "date": date_obj,
                     "song": song,
                     "artist": artist,
-                    "original_artist": str(row[artist_col])
+                    "original_artist": str(row[artist_col]),
+                    "original_song": original_song,
                 })
         except Exception:
             continue
@@ -261,7 +264,8 @@ def get_latest_number_one():
         for _, row in df.iterrows():
             try:
                 date_str = str(row[date_col])
-                song = clean_song_title(str(row[song_col]))
+                original_song = str(row[song_col])
+                song = clean_song_title(original_song)
                 artist = clean_artist_name(str(row[artist_col]))
                 date_obj = datetime.strptime(date_str.split("–")[0].strip(), "%d %B %Y")
                 if latest_date is None or date_obj > latest_date:
@@ -270,7 +274,8 @@ def get_latest_number_one():
                         "date": date_obj,
                         "song": song,
                         "artist": artist,
-                        "original_artist": str(row[artist_col])
+                        "original_artist": str(row[artist_col]),
+                        "original_song": original_song,
                     }
             except Exception:
                 continue
@@ -305,8 +310,9 @@ def search_spotify_track(song, artist, original_artist):
 
 # ==== ADD TO SPOTIFY WITH CACHING + RETRY + DEDUP ====
 added_song_artist_pairs = set()
+not_found_pairs: set[tuple[str, str]] = set()  # (song_as_seen, artist_original)
 
-def add_song_to_playlist(song, artist, original_artist):
+def add_song_to_playlist(song, artist, original_artist, original_song):
     global existing_playlist_tracks
     pair_key = f"{base_song_key(song)}|{base_artist_key(artist)}"
     if pair_key in added_song_artist_pairs:
@@ -321,6 +327,8 @@ def add_song_to_playlist(song, artist, original_artist):
         if track_id:
             track_cache[cache_key] = track_id
         else:
+            # Record as seen in Wikipedia (raw song title, original artist string)
+            not_found_pairs.add((original_song, original_artist))
             print(f"❌ Not found after fuzzy search: {song} - {artist}")
             return
 
@@ -364,6 +372,9 @@ def reorder_playlist_chronologically():
             track_id = search_spotify_track(s['song'], s['artist'], s['original_artist'])
             if track_id:
                 track_cache[cache_key] = track_id
+            else:
+                # Record missing with the Wikipedia-provided values
+                not_found_pairs.add((s['original_song'], s['original_artist']))
         if track_id:
             # Guard against duplicates at the Spotify track ID level too
             if track_id in seen_track_ids:
@@ -393,15 +404,23 @@ if __name__ == "__main__":
         print(f"✅ Found {len(songs)} songs to process")
         for idx, s in enumerate(songs, start=1):
             print(f"[{idx}/{len(songs)}] Processing: {s['song']} - {s['artist']}")
-            add_song_to_playlist(s["song"], s["artist"], s["original_artist"])
+            add_song_to_playlist(s["song"], s["artist"], s["original_artist"], s["original_song"])
         reorder_playlist_chronologically()
     else:
         print("🔍 Checking latest Number 1...")
         latest = get_latest_number_one()
         if latest and latest["date"] >= START_DATE:
             print(f"Latest chart-topper: {latest['song']} - {latest['artist']}")
-            add_song_to_playlist(latest["song"], latest["artist"], latest["original_artist"])
+            add_song_to_playlist(latest["song"], latest["artist"], latest["original_artist"], latest["original_song"])
         reorder_playlist_chronologically()
 
     with open(CACHE_FILE, "w") as f:
         json.dump(track_cache, f)
+
+    # Write not-found summary (unique, minimal fields)
+    summary = [
+        {"song": song, "artist": artist}
+        for (song, artist) in sorted(not_found_pairs, key=lambda x: (x[1].lower(), x[0].lower()))
+    ]
+    with open(NOT_FOUND_FILE, "w") as f:
+        json.dump(summary, f, indent=2)
