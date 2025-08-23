@@ -134,9 +134,61 @@ def clean_song_title(song):
     song = re.sub(r"\[.*?\]|\(.*?\)", "", song)
     return song.strip()
 
+def base_song_key(song: str) -> str:
+    """Return a canonical key for de-dup decisions.
+
+    - Lowercase
+    - Remove bracketed text (already done by clean_song_title)
+    - Remove year suffixes like '98 / ’98
+    - Strip common version tags (remaster, edit, mix, version)
+    - Collapse whitespace
+    """
+    t = clean_song_title(song).lower()
+    # Remove apostrophe-year like '98 or ’98
+    t = re.sub(r"\s*['’]\d{2}\b", "", t)
+    # Remove common suffix tags
+    tags = [
+        r"\b\d{4}\s*remaster(?:ed)?\b",
+        r"\bremaster(?:ed)?\s*\d{4}\b",
+        r"\bremaster(?:ed)?\b",
+        r"\bradio\s+edit\b",
+        r"\bsingle\s+version\b",
+        r"\boriginal\s+mix\b",
+        r"\bmono\b",
+        r"\bstereo\b",
+        r"\bedit\b",
+        r"\bmix\b",
+        r"\bversion\b",
+    ]
+    for pat in tags:
+        t = re.sub(pat, "", t, flags=re.IGNORECASE)
+    # Remove trailing hyphenated qualifiers like " - 2011 remaster"
+    t = re.sub(r"\s*-\s*$", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 def clean_artist_name(artist):
     artist = re.split(r"\s+(featuring|feat\.|ft\.|with|&)\s+", artist, flags=re.IGNORECASE)[0]
     return artist.strip()
+
+def base_artist_key(artist: str) -> str:
+    """Canonicalize artist string for de-dup decisions.
+
+    - Lowercase
+    - Remove featured/with parts (handled by clean_artist_name)
+    - Normalize separators (comma/and/&/with) to a unified delimiter
+    - Keep only the first one or two primary names to avoid minor credit differences
+    """
+    a = clean_artist_name(artist).lower()
+    # Normalize separators to comma
+    a = re.sub(r"\s*&\s*|\s+and\s+|\s+with\s+", ",", a)
+    # Split on commas and collapse whitespace
+    parts = [p.strip() for p in a.split(",") if p.strip()]
+    # Keep first two principal names to avoid variations
+    if not parts:
+        return a
+    key = " & ".join(parts[:2])
+    return key
 
 # ==== FLEXIBLE TABLE PARSER ====
 def parse_wiki_table(table, all_songs):
@@ -237,10 +289,18 @@ def search_spotify_track(song, artist, original_artist):
     ]
 
     for query, desc in queries:
-        results = sp.search(q=query, type="track", limit=1)
-        if results["tracks"]["items"]:
+        try:
+            results = sp.search(q=query, type="track", limit=1, market="GB")
+        except Exception:
+            results = None
+        items = (
+            results.get("tracks", {}).get("items", [])
+            if isinstance(results, dict)
+            else []
+        )
+        if items:
             print(f"   ✅ Found with {desc}")
-            return results["tracks"]["items"][0]["id"]
+            return items[0]["id"]
     return None
 
 # ==== ADD TO SPOTIFY WITH CACHING + RETRY + DEDUP ====
@@ -248,18 +308,18 @@ added_song_artist_pairs = set()
 
 def add_song_to_playlist(song, artist, original_artist):
     global existing_playlist_tracks
-    pair_key = f"{song.lower()}|{artist.lower()}"
+    pair_key = f"{base_song_key(song)}|{base_artist_key(artist)}"
     if pair_key in added_song_artist_pairs:
         print(f"⏩ Duplicate song+artist detected, skipping: {song} - {artist}")
         return
 
-    key = f"{song} - {artist}"
-    track_id = track_cache.get(key)
+    cache_key = f"{base_song_key(song)}|{base_artist_key(artist)}"
+    track_id = track_cache.get(cache_key)
 
     if not track_id:
         track_id = search_spotify_track(song, artist, original_artist)
         if track_id:
-            track_cache[key] = track_id
+            track_cache[cache_key] = track_id
         else:
             print(f"❌ Not found after fuzzy search: {song} - {artist}")
             return
@@ -291,21 +351,27 @@ def reorder_playlist_chronologically():
     all_songs_sorted = get_all_number_ones_from_decades()
     track_ids_sorted = []
     unique_pairs = set()
+    seen_track_ids = set()
 
     for s in all_songs_sorted:
-        pair_key = f"{s['song'].lower()}|{s['artist'].lower()}"
+        pair_key = f"{base_song_key(s['song'])}|{base_artist_key(s['artist'])}"
         if pair_key in unique_pairs:
             continue
         unique_pairs.add(pair_key)
-
-        key = f"{s['song']} - {s['artist']}"
-        track_id = track_cache.get(key)
+        cache_key = f"{base_song_key(s['song'])}|{base_artist_key(s['artist'])}"
+        track_id = track_cache.get(cache_key)
         if not track_id:
             track_id = search_spotify_track(s['song'], s['artist'], s['original_artist'])
             if track_id:
-                track_cache[key] = track_id
+                track_cache[cache_key] = track_id
         if track_id:
-            track_ids_sorted.append(track_id)
+            # Guard against duplicates at the Spotify track ID level too
+            if track_id in seen_track_ids:
+                if DEBUG:
+                    print(f"⏩ Skipping duplicate track ID already queued: {track_id} ({s['song']} - {s['artist']})")
+            else:
+                seen_track_ids.add(track_id)
+                track_ids_sorted.append(track_id)
 
     if DEBUG:
         print(f"📝 Would reorder playlist to {len(track_ids_sorted)} unique tracks in chronological order")
