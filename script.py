@@ -29,6 +29,7 @@ DATA_FILE = "added_tracks.json"
 CACHE_FILE = "track_cache.json"
 NOT_FOUND_FILE = "not_found.json"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+ACTION = os.getenv("ACTION", "").lower()  # "rebuild"/"reorder" or "clear"
 
 # Spotify API credentials from GitHub Secrets
 SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
@@ -463,6 +464,33 @@ def reorder_playlist_chronologically():
 
 # ==== MAIN ====
 if __name__ == "__main__":
+    # Manual action: clear playlist and reset JSONs
+    if ACTION == "clear":
+        print("🧹 Clearing playlist and resetting JSON outputs...")
+        if not DEBUG:
+            sp.playlist_replace_items(PLAYLIST_ID, [])
+        # Reset JSON files
+        with open(DATA_FILE, "w") as f:
+            json.dump([], f)
+        with open(NOT_FOUND_FILE, "w") as f:
+            json.dump([], f, indent=2)
+        print("✅ Playlist cleared and outputs reset")
+        sys.exit(0)
+
+    # Manual action: rebuild/reorder playlist from source data
+    if ACTION in ("rebuild", "reorder"):
+        reorder_playlist_chronologically()
+        with open(CACHE_FILE, "w") as f:
+            json.dump(track_cache, f)
+        # Write not_found summary (if any)
+        summary = [
+            {"song": song, "artist": artist}
+            for (song, artist) in sorted(not_found_pairs, key=lambda x: (x[1].lower(), x[0].lower()))
+        ]
+        with open(NOT_FOUND_FILE, "w") as f:
+            json.dump(summary, f, indent=2)
+        sys.exit(0)
+
     if not added_tracks:
         print("📀 First run detected — backfilling all Number 1s since 1996...")
         songs = get_all_number_ones_from_decades()
