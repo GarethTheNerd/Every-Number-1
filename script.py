@@ -22,6 +22,12 @@ except Exception:
 
 # ==== CLEAN LOGS ====
 warnings.simplefilter(action="ignore", category=FutureWarning)
+# Suppress noisy pandas date parsing UserWarnings in debug output
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r"Could not infer format, so each element will be parsed individually.*",
+)
 
 # ==== CONFIG ====
 START_DATE = datetime(1996, 2, 7)

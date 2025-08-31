@@ -3,7 +3,21 @@ name: Update UK Number 1 Playlist
 on:
   schedule:
   - cron: "0 20 * * 5" # Every Friday at 8pm UTC
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch: # Allow manual trigger with options
+    inputs:
+      debug:
+        description: "Enable verbose debug logging (does not modify playlist when true)"
+        type: boolean
+        default: false
+        required: false
+      action:
+        description: "Optional action override"
+        type: choice
+        options:
+          - rebuild
+          - reorder
+          - clear
+        required: false
 permissions:
   contents: write
 
@@ -30,7 +44,8 @@ jobs:
           SPOTIPY_REDIRECT_URI: ${{ secrets.SPOTIPY_REDIRECT_URI }}
           SPOTIFY_PLAYLIST_ID: ${{ secrets.SPOTIFY_PLAYLIST_ID }}
           SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
-          DEBUG: "true"
+          DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || 'false' }}
+          ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || '' }}
         run: python script.py
 
       - name: Commit updated outputs
