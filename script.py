@@ -243,6 +243,14 @@ def parse_wiki_table(table, all_songs):
         base_year = _extract_year(caption.get_text()) if caption else None
     except Exception:
         base_year = None
+    # Fallback: look at the nearest previous heading (e.g., h2/h3/h4) that usually contains the year
+    if base_year is None:
+        try:
+            prev_hdr = table.find_previous(["h2", "h3", "h4"])  # type: ignore[attr-defined]
+            if prev_hdr is not None:
+                base_year = _extract_year(prev_hdr.get_text())
+        except Exception:
+            pass
 
     df = pd.read_html(StringIO(str(table)))[0]
     df.columns = [normalise_header(str(c)) for c in df.columns]
@@ -252,9 +260,15 @@ def parse_wiki_table(table, all_songs):
     artist_col = next((c for c in df.columns if "artist" in c), None)
 
     if not date_col or not song_col or not artist_col:
+        if DEBUG:
+            print(f"   ⏩ Skipping table, headers={list(df.columns)} (date_col={date_col}, song_col={song_col}, artist_col={artist_col})")
         return
 
+    if DEBUG:
+        print(f"   🔎 Table headers={list(df.columns)} -> date={date_col}, song={song_col}, artist={artist_col}")
+
     current_year = base_year
+    added = 0
     for _, row in df.iterrows():
         try:
             date_str = str(row[date_col])
@@ -265,6 +279,8 @@ def parse_wiki_table(table, all_songs):
             inferred_year = _extract_year(date_str) or current_year
             date_obj = parse_date_with_fallback(date_str, inferred_year)
             if date_obj is None:
+                if DEBUG:
+                    print(f"      ⚠️ Could not parse date '{date_str}' (inferred_year={inferred_year})")
                 continue
             # Update year tracker if we encountered an explicit year
             if _extract_year(date_str):
@@ -277,8 +293,11 @@ def parse_wiki_table(table, all_songs):
                     "original_artist": str(row[artist_col]),
                     "original_song": original_song,
                 })
+                added += 1
         except Exception:
             continue
+    if DEBUG:
+        print(f"   ✅ Added {added} rows from this table")
 
 # ==== SCRAPE ALL UK NUMBER 1s FROM DECADE PAGES ====
 def get_all_number_ones_from_decades():
@@ -293,13 +312,20 @@ def get_all_number_ones_from_decades():
 
     all_songs = []
     for url in decade_urls:
+        if DEBUG:
+            print(f"🌐 Fetching: {url}")
         r = requests.get(
             url,
             headers={"User-Agent": "Every-Number-1/1.0 (+https://github.com/GarethTheNerd/Every-Number-1)"},
             timeout=30,
         )
+        if r.status_code != 200 or not r.text:
+            print(f"⚠️ Failed to fetch {url}: HTTP {r.status_code}")
+            continue
         soup = BeautifulSoup(r.text, "html.parser")
         tables = soup.find_all("table", {"class": "wikitable"})
+        if DEBUG:
+            print(f"   🧾 Found {len(tables)} tables")
         for table in tables:
             parse_wiki_table(table, all_songs)
 
@@ -309,6 +335,9 @@ def get_all_number_ones_from_decades():
 def get_latest_number_one():
     url = "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
     r = requests.get(url, headers={"User-Agent": "Every-Number-1/1.0 (+https://github.com/GarethTheNerd/Every-Number-1)"}, timeout=30)
+    if r.status_code != 200 or not r.text:
+        print(f"⚠️ Failed to fetch {url}: HTTP {r.status_code}")
+        return None
     soup = BeautifulSoup(r.text, "html.parser")
     tables = soup.find_all("table", {"class": "wikitable"})
     latest_song = None
