@@ -187,20 +187,26 @@ def _first_date_segment(s: str) -> str:
 def parse_date_with_fallback(date_text: str, fallback_year: Optional[int]) -> Optional[datetime]:
     # Remove any bracketed notes and trim
     t = re.sub(r"\[.*?\]|\(.*?\)", "", str(date_text)).strip()
+    # Normalize Unicode spaces (e.g., NBSP) to regular spaces
+    t = t.replace("\u00a0", " ").replace("\u2009", " ")
     # Some rows might be NaN/None
     if not t or t.lower() == "nan":
+        return None
+    # If the cell is just a year, skip (table subheaders)
+    if re.fullmatch(r"(19|20)\d{2}", t):
         return None
     # Try to extract year from the text; else use fallback
     yy = _extract_year(t) or fallback_year
     # Keep only the first date segment before ranges
     left = _first_date_segment(t)
-    # Build candidate strings to parse
+    left = left.replace("\u00a0", " ").replace("\u2009", " ")
+    # Build candidate strings to parse (avoid duplicating year)
     candidates = []
-    if yy:
+    candidates.append(left)
+    candidates.append(t)
+    if yy and (_extract_year(left) is None) and (_extract_year(t) is None):
         candidates.append(f"{left} {yy}")
-    else:
-        candidates.append(left)
-    # Try multiple formats
+    # Try multiple formats via strptime
     fmts = ["%d %B %Y", "%d %b %Y", "%d %B", "%d %b"]
     for cand in candidates:
         for fmt in fmts:
@@ -214,6 +220,15 @@ def parse_date_with_fallback(date_text: str, fallback_year: Optional[int]) -> Op
                 return dt
             except Exception:
                 continue
+    # Fallback to pandas parser (dayfirst) if available
+    try:
+        s = pd.Series(candidates)
+        ds = pd.to_datetime(s, errors="coerce", dayfirst=True, utc=False)
+        ds = ds.dropna()
+        if not ds.empty:
+            return ds.iloc[0].to_pydatetime()
+    except Exception:
+        pass
     return None
 
 def base_artist_key(artist: str) -> str:
