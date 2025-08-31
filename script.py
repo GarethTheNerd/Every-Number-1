@@ -11,6 +11,7 @@ from spotipy.oauth2 import SpotifyOAuth
 from datetime import datetime
 from io import StringIO
 import warnings
+from typing import Optional
 
 # Optional: load .env for local dev if python-dotenv is installed
 try:
@@ -173,6 +174,48 @@ def clean_artist_name(artist):
     artist = re.split(r"\s+(featuring|feat\.|ft\.|with|&)\s+", artist, flags=re.IGNORECASE)[0]
     return artist.strip()
 
+# ==== DATE PARSING HELPERS ====
+def _extract_year(text: str) -> Optional[int]:
+    m = re.search(r"(19|20)\d{2}", text)
+    return int(m.group(0)) if m else None
+
+def _first_date_segment(s: str) -> str:
+    # Keep left part before ranges (en dash, hyphen, or 'to')
+    seg = re.split(r"\s*(–|-|to)\s*", s, maxsplit=1)[0]
+    return seg.strip()
+
+def parse_date_with_fallback(date_text: str, fallback_year: Optional[int]) -> Optional[datetime]:
+    # Remove any bracketed notes and trim
+    t = re.sub(r"\[.*?\]|\(.*?\)", "", str(date_text)).strip()
+    # Some rows might be NaN/None
+    if not t or t.lower() == "nan":
+        return None
+    # Try to extract year from the text; else use fallback
+    yy = _extract_year(t) or fallback_year
+    # Keep only the first date segment before ranges
+    left = _first_date_segment(t)
+    # Build candidate strings to parse
+    candidates = []
+    if yy:
+        candidates.append(f"{left} {yy}")
+    else:
+        candidates.append(left)
+    # Try multiple formats
+    fmts = ["%d %B %Y", "%d %b %Y", "%d %B", "%d %b"]
+    for cand in candidates:
+        for fmt in fmts:
+            try:
+                dt = datetime.strptime(cand, fmt)
+                # If format lacked year, inject fallback year
+                if fmt in ("%d %B", "%d %b"):
+                    if yy is None:
+                        continue
+                    dt = dt.replace(year=yy)
+                return dt
+            except Exception:
+                continue
+    return None
+
 def base_artist_key(artist: str) -> str:
     """Canonicalize artist string for de-dup decisions.
 
@@ -194,6 +237,13 @@ def base_artist_key(artist: str) -> str:
 
 # ==== FLEXIBLE TABLE PARSER ====
 def parse_wiki_table(table, all_songs):
+    # Try to infer base year from table caption if present
+    try:
+        caption = getattr(table, "find", lambda *a, **k: None)("caption")
+        base_year = _extract_year(caption.get_text()) if caption else None
+    except Exception:
+        base_year = None
+
     df = pd.read_html(StringIO(str(table)))[0]
     df.columns = [normalise_header(str(c)) for c in df.columns]
 
@@ -204,13 +254,21 @@ def parse_wiki_table(table, all_songs):
     if not date_col or not song_col or not artist_col:
         return
 
+    current_year = base_year
     for _, row in df.iterrows():
         try:
             date_str = str(row[date_col])
             original_song = str(row[song_col])
             song = clean_song_title(original_song)
             artist = clean_artist_name(str(row[artist_col]))
-            date_obj = datetime.strptime(date_str.split("–")[0].strip(), "%d %B %Y")
+            # Parse date, using current/base year as needed
+            inferred_year = _extract_year(date_str) or current_year
+            date_obj = parse_date_with_fallback(date_str, inferred_year)
+            if date_obj is None:
+                continue
+            # Update year tracker if we encountered an explicit year
+            if _extract_year(date_str):
+                current_year = date_obj.year
             if date_obj >= START_DATE:
                 all_songs.append({
                     "date": date_obj,
@@ -235,7 +293,11 @@ def get_all_number_ones_from_decades():
 
     all_songs = []
     for url in decade_urls:
-        r = requests.get(url)
+        r = requests.get(
+            url,
+            headers={"User-Agent": "Every-Number-1/1.0 (+https://github.com/GarethTheNerd/Every-Number-1)"},
+            timeout=30,
+        )
         soup = BeautifulSoup(r.text, "html.parser")
         tables = soup.find_all("table", {"class": "wikitable"})
         for table in tables:
@@ -246,7 +308,7 @@ def get_all_number_ones_from_decades():
 # ==== SCRAPE LATEST UK NUMBER 1 ====
 def get_latest_number_one():
     url = "https://en.wikipedia.org/wiki/List_of_UK_singles_chart_number_ones_of_the_2020s"
-    r = requests.get(url)
+    r = requests.get(url, headers={"User-Agent": "Every-Number-1/1.0 (+https://github.com/GarethTheNerd/Every-Number-1)"}, timeout=30)
     soup = BeautifulSoup(r.text, "html.parser")
     tables = soup.find_all("table", {"class": "wikitable"})
     latest_song = None
@@ -262,13 +324,26 @@ def get_latest_number_one():
         if not date_col or not song_col or not artist_col:
             continue
 
+        # Track year progression across rows
+        base_year = None
+        cap = getattr(table, "find", lambda *a, **k: None)("caption")
+        try:
+            base_year = _extract_year(cap.get_text()) if cap else None
+        except Exception:
+            base_year = None
+        current_year = base_year
         for _, row in df.iterrows():
             try:
                 date_str = str(row[date_col])
                 original_song = str(row[song_col])
                 song = clean_song_title(original_song)
                 artist = clean_artist_name(str(row[artist_col]))
-                date_obj = datetime.strptime(date_str.split("–")[0].strip(), "%d %B %Y")
+                inferred_year = _extract_year(date_str) or current_year
+                date_obj = parse_date_with_fallback(date_str, inferred_year)
+                if date_obj is None:
+                    continue
+                if _extract_year(date_str):
+                    current_year = date_obj.year
                 if latest_date is None or date_obj > latest_date:
                     latest_date = date_obj
                     latest_song = {
@@ -454,6 +529,9 @@ def reorder_playlist_chronologically():
         print(f"📝 Would reorder playlist to {len(track_ids_sorted)} unique tracks in chronological order")
         return
 
+    if not track_ids_sorted:
+        print("⚠️ No track IDs resolved; skipping playlist replace to avoid clearing it.")
+        return
     sp.playlist_replace_items(PLAYLIST_ID, [])
     for i in range(0, len(track_ids_sorted), 100):
         sp.playlist_add_items(PLAYLIST_ID, track_ids_sorted[i:i+100])
